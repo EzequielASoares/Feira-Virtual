@@ -1,18 +1,19 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from . import views
 
 router = DefaultRouter()
 router.register("enderecos", views.EnderecoViewSet, basename="endereco")
+router.register("produtores", views.ProdutorPublicoViewSet, basename="produtor-publico")
 
 urlpatterns = [
+    path("auth/csrf/", views.CsrfTokenView.as_view()),
     path("auth/registro/cliente/", views.RegistroClienteView.as_view()),
     path("auth/registro/produtor/", views.RegistroProdutorView.as_view()),
     path("auth/registro/entregador/", views.RegistroEntregadorView.as_view()),
-    path("auth/login/", TokenObtainPairView.as_view()),
-    path("auth/refresh/", TokenRefreshView.as_view()),
+    path("auth/login/", views.LoginView.as_view()),
+    path("auth/refresh/", views.RefreshView.as_view()),
     path("auth/logout/", views.LogoutView.as_view()),
     path("auth/recuperar-senha/", views.RecuperarSenhaView.as_view()),
     path("auth/redefinir-senha/", views.RedefinirSenhaView.as_view()),

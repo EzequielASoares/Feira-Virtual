@@ -10,7 +10,7 @@ from .serializers import AvaliacaoSerializer, ReclamacaoSerializer
 
 class AvaliacaoViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
     """Qualquer um vê as avaliações (?produto=ID ou ?produtor=ID); só quem comprou avalia."""
-    queryset = Avaliacao.objects.select_related("cliente")
+    queryset = Avaliacao.objects.select_related("cliente", "produto", "produtor")
     serializer_class = AvaliacaoSerializer
     filterset_fields = ["produto", "produtor"]
 
@@ -28,16 +28,28 @@ class AvaliacaoProdutorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         perfil = self.request.user.perfil_produtor
-        return Avaliacao.objects.filter(Q(produtor=perfil) | Q(produto__produtor=perfil))
+        return (
+            Avaliacao.objects
+            .filter(Q(produtor=perfil) | Q(produto__produtor=perfil))
+            .select_related("cliente", "produto", "produtor")
+        )
 
 
-class ReclamacaoViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin,
-                        viewsets.GenericViewSet):
+class ReclamacaoViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
     serializer_class = ReclamacaoSerializer
     permission_classes = [EhCliente]
 
     def get_queryset(self):
-        return Reclamacao.objects.filter(cliente=self.request.user)
+        return (
+            Reclamacao.objects
+            .filter(cliente=self.request.user)
+            .select_related("pedido__produtor")
+        )
 
     def perform_create(self, serializer):
         serializer.save(cliente=self.request.user)

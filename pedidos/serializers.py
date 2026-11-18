@@ -9,20 +9,35 @@ class ItemCarrinhoSerializer(serializers.ModelSerializer):
     produto_nome = serializers.CharField(source="produto.nome", read_only=True)
     preco_unitario = serializers.DecimalField(source="produto.preco", max_digits=10, decimal_places=2, read_only=True)
     unidade_medida = serializers.CharField(source="produto.unidade_medida", read_only=True)
+    estoque_disponivel = serializers.DecimalField(source="produto.estoque", max_digits=10, decimal_places=3, read_only=True)
+    produtor_id = serializers.IntegerField(source="produto.produtor_id", read_only=True)
+    produtor_nome = serializers.CharField(source="produto.produtor.nome_propriedade", read_only=True)
+    produtor_aceita_pix = serializers.SerializerMethodField()
+    produtor_possui_maquininha = serializers.BooleanField(source="produto.produtor.possui_maquininha", read_only=True)
+    produtor_aceita_dinheiro = serializers.BooleanField(source="produto.produtor.aceita_dinheiro", read_only=True)
     subtotal = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
     class Meta:
         model = ItemCarrinho
-        fields = ["id", "produto", "produto_nome", "preco_unitario", "unidade_medida", "quantidade", "subtotal"]
+        fields = [
+            "id", "produto", "produto_nome", "preco_unitario", "unidade_medida",
+            "estoque_disponivel", "produtor_id", "produtor_nome",
+            "produtor_aceita_pix", "produtor_possui_maquininha", "produtor_aceita_dinheiro",
+            "quantidade", "subtotal",
+        ]
+
+    def get_produtor_aceita_pix(self, obj):
+        return bool(obj.produto.produtor.chave_pix)
 
     def validate(self, attrs):
         produto = attrs.get("produto") or self.instance.produto
         qtd = attrs.get("quantidade", getattr(self.instance, "quantidade", 0))
-        if not produto.ativo or produto.produtor.status != "APROVADO":
+        if not produto.ativo or not produto.categoria.ativa or produto.produtor.status != "APROVADO":
             raise serializers.ValidationError("Produto indisponível.")
-        if self.instance is None:  # soma com o que já está no carrinho
+        if self.instance is None:
             existente = ItemCarrinho.objects.filter(
-                carrinho=self.context["carrinho"], produto=produto).first()
+                carrinho=self.context["carrinho"], produto=produto
+            ).first()
             if existente:
                 qtd = qtd + existente.quantidade
         if qtd > produto.estoque:
@@ -58,13 +73,22 @@ class PedidoSerializer(serializers.ModelSerializer):
     historico = HistoricoSerializer(many=True, read_only=True)
     produtor_nome = serializers.CharField(source="produtor.nome_propriedade", read_only=True)
     cliente_nome = serializers.CharField(source="cliente.get_full_name", read_only=True)
+    cliente_username = serializers.CharField(source="cliente.username", read_only=True)
+    entregador_nome = serializers.SerializerMethodField()
 
     class Meta:
         model = Pedido
-        fields = ["id", "status", "modalidade", "forma_pagamento", "endereco_entrega", "observacao", "total",
-                  "produtor", "produtor_nome", "cliente", "cliente_nome", "entregador",
-                  "itens", "historico", "criado_em", "atualizado_em"]
+        fields = [
+            "id", "status", "modalidade", "forma_pagamento", "endereco_entrega", "observacao", "total",
+            "produtor", "produtor_nome", "cliente", "cliente_nome", "cliente_username",
+            "entregador", "entregador_nome", "itens", "historico", "criado_em", "atualizado_em",
+        ]
         read_only_fields = fields
+
+    def get_entregador_nome(self, obj):
+        if not obj.entregador:
+            return None
+        return obj.entregador.get_full_name() or obj.entregador.username
 
 
 class CheckoutSerializer(serializers.Serializer):

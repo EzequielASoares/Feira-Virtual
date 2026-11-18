@@ -10,4 +10,7 @@ router.register("produtos", views.ProdutoAdminViewSet, basename="admin-produto")
 router.register("pedidos", views.PedidoAdminViewSet, basename="admin-pedido")
 router.register("reclamacoes", views.ReclamacaoAdminViewSet, basename="admin-reclamacao")
 
-urlpatterns = [path("indicadores/", views.IndicadoresView.as_view())] + router.urls
+urlpatterns = [
+    path("health/", views.HealthCheckView.as_view(), name="health"),
+    path("indicadores/", views.IndicadoresView.as_view()),
+] + router.urls

@@ -8,9 +8,32 @@ from .models import Endereco, PerfilEntregador, PerfilProdutor, Usuario
 class PerfilProdutorSerializer(serializers.ModelSerializer):
     class Meta:
         model = PerfilProdutor
-        fields = ["id", "status", "nome_propriedade", "descricao", "endereco_propriedade",
-                  "cidade", "estado", "foto_propriedade", "chave_pix", "possui_maquininha", "aceita_dinheiro"]
+        fields = [
+            "id", "status", "nome_propriedade", "descricao", "endereco_propriedade",
+            "cidade", "estado", "foto_propriedade", "chave_pix", "possui_maquininha", "aceita_dinheiro",
+        ]
         read_only_fields = ["status"]
+
+
+class ProdutorPublicoSerializer(serializers.ModelSerializer):
+    nota_media = serializers.FloatField(read_only=True, default=None)
+    total_avaliacoes = serializers.IntegerField(read_only=True, default=0)
+    produtos_ativos = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = PerfilProdutor
+        fields = [
+            "id", "nome_propriedade", "descricao", "cidade", "estado", "foto_propriedade",
+            "chave_pix", "possui_maquininha", "aceita_dinheiro",
+            "nota_media", "total_avaliacoes", "produtos_ativos",
+        ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Não expõe a chave Pix bruta publicamente; apenas informa se aceita Pix
+        pix = data.pop("chave_pix", "")
+        data["aceita_pix"] = bool(pix)
+        return data
 
 
 class PerfilEntregadorSerializer(serializers.ModelSerializer):
@@ -26,16 +49,20 @@ class UsuarioSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Usuario
-        fields = ["id", "username", "email", "first_name", "last_name", "telefone", "tipo",
-                  "perfil_produtor", "perfil_entregador"]
+        fields = [
+            "id", "username", "email", "first_name", "last_name", "telefone", "tipo",
+            "perfil_produtor", "perfil_entregador",
+        ]
         read_only_fields = ["username", "tipo"]
 
 
 class UsuarioAdminSerializer(serializers.ModelSerializer):
     class Meta:
         model = Usuario
-        fields = ["id", "username", "email", "first_name", "last_name", "telefone", "tipo",
-                  "is_active", "date_joined"]
+        fields = [
+            "id", "username", "email", "first_name", "last_name", "telefone", "tipo",
+            "is_active", "date_joined",
+        ]
         read_only_fields = fields
 
 
@@ -47,6 +74,12 @@ class RegistroBaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Usuario
         fields = ["id", "username", "email", "first_name", "last_name", "telefone", "password"]
+
+    def validate_email(self, value):
+        norm = value.strip().lower()
+        if Usuario.objects.filter(email__iexact=norm).exists():
+            raise serializers.ValidationError("Já existe uma conta cadastrada com este e-mail.")
+        return norm
 
     def validate_password(self, value):
         validate_password(value)
@@ -72,8 +105,10 @@ class RegistroClienteSerializer(RegistroBaseSerializer):
 
 class RegistroProdutorSerializer(RegistroBaseSerializer):
     tipo_fixo = Usuario.Tipo.PRODUTOR
-    campos_perfil = ("nome_propriedade", "descricao", "endereco_propriedade", "cidade", "estado",
-                     "chave_pix", "possui_maquininha", "aceita_dinheiro")
+    campos_perfil = (
+        "nome_propriedade", "descricao", "endereco_propriedade", "cidade", "estado",
+        "chave_pix", "possui_maquininha", "aceita_dinheiro",
+    )
     nome_propriedade = serializers.CharField(write_only=True)
     descricao = serializers.CharField(write_only=True, required=False, allow_blank=True)
     endereco_propriedade = serializers.CharField(write_only=True, required=False, allow_blank=True)
@@ -86,7 +121,8 @@ class RegistroProdutorSerializer(RegistroBaseSerializer):
     class Meta(RegistroBaseSerializer.Meta):
         fields = RegistroBaseSerializer.Meta.fields + [
             "nome_propriedade", "descricao", "endereco_propriedade", "cidade", "estado",
-            "chave_pix", "possui_maquininha", "aceita_dinheiro"]
+            "chave_pix", "possui_maquininha", "aceita_dinheiro",
+        ]
 
     def criar_perfil(self, user, dados):
         PerfilProdutor.objects.create(usuario=user, **dados)
@@ -123,4 +159,4 @@ class RedefinirSenhaSerializer(serializers.Serializer):
 
 
 class LogoutSerializer(serializers.Serializer):
-    refresh = serializers.CharField()
+    refresh = serializers.CharField(required=False, allow_blank=True)

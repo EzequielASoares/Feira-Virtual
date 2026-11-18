@@ -1,9 +1,16 @@
 from decimal import Decimal
+import threading
+import time
 
+from django.db import OperationalError, close_old_connections, connection
+from django.test import TransactionTestCase
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
 from catalogo.models import Categoria, Produto
-from usuarios.models import Usuario
+from pedidos import services
+from pedidos.models import ItemPedido, Pedido
+from usuarios.models import PerfilProdutor, Usuario
 
 PW = "Senha-Forte-123"
 
@@ -142,3 +149,140 @@ class FluxoCompletoTest(APITestCase):
         r = self.client.post("/api/auth/redefinir-senha/", {"uid": uid, "token": token, "nova_senha": "OutraSenha-987"},
                              format="json")
         self.assertEqual(r.status_code, 200, r.data)
+
+    def test_checkout_divide_pedidos_por_produtor_e_concorrencia_entrega(self):
+        self.registrar("produtor", "pedro", nome_propriedade="Sítio Norte", aceita_dinheiro=True)
+        PerfilProdutor.objects.update(status="APROVADO")
+
+        p1 = PerfilProdutor.objects.get(usuario__username="maria")
+        p2 = PerfilProdutor.objects.get(usuario__username="pedro")
+        prod_a = Produto.objects.create(produtor=p1, categoria=self.cat, nome="Tomate", preco="5.00", estoque="5")
+        prod_b = Produto.objects.create(produtor=p2, categoria=self.cat, nome="Banana", preco="4.00", estoque="5")
+
+        self.login("joao")
+        end_id = self.client.post(
+            "/api/enderecos/",
+            {"logradouro": "Rua C", "numero": "5", "bairro": "Centro", "cidade": "Natal", "estado": "RN"},
+            format="json",
+        ).data["id"]
+        self.client.post("/api/carrinho/itens/", {"produto": prod_a.id, "quantidade": "2"}, format="json")
+        self.client.post("/api/carrinho/itens/", {"produto": prod_b.id, "quantidade": "3"}, format="json")
+
+        chk = self.client.post(
+            "/api/pedidos/",
+            {"modalidade": "ENTREGA", "forma_pagamento": "DINHEIRO", "endereco_id": end_id},
+            format="json",
+        )
+        self.assertEqual(chk.status_code, 201)
+        self.assertEqual(len(chk.data), 2)
+
+        # Maria aceita seu pedido; outro produtor não pode aceitar o pedido da Maria
+        pedido_maria = next(p["id"] for p in chk.data if p["produtor"] == p1.id)
+        self.login("pedro")
+        self.assertEqual(self.client.post(f"/api/produtor/pedidos/{pedido_maria}/aceitar/").status_code, 404)
+
+        self.login("maria")
+        self.assertEqual(self.client.post(f"/api/produtor/pedidos/{pedido_maria}/aceitar/").status_code, 200)
+
+        # Dois entregadores tentando aceitar a mesma entrega
+        self.registrar("entregador", "moto2", veiculo="Moto")
+        self.login("zeca")
+        self.assertEqual(self.client.post(f"/api/entregas/{pedido_maria}/aceitar/").status_code, 200)
+        self.login("moto2")
+        self.assertEqual(self.client.post(f"/api/entregas/{pedido_maria}/aceitar/").status_code, 400)
+
+    def test_dois_clientes_tentando_comprar_ultima_unidade(self):
+        from usuarios.models import PerfilProdutor
+        PerfilProdutor.objects.update(status="APROVADO")
+        perfil = PerfilProdutor.objects.get(usuario__username="maria")
+        ultima = Produto.objects.create(produtor=perfil, categoria=self.cat, nome="Queijo Coalho", preco="25.00", estoque="1")
+
+        self.registrar("cliente", "bia")
+        # João e Bia fecham pedidos para a última unidade
+        self.login("joao")
+        self.client.post("/api/carrinho/itens/", {"produto": ultima.id, "quantidade": "1"}, format="json")
+        ped_joao = self.client.post(
+            "/api/pedidos/", {"modalidade": "RETIRADA", "forma_pagamento": "DINHEIRO"}, format="json"
+        ).data[0]["id"]
+
+        self.login("bia")
+        self.client.post("/api/carrinho/itens/", {"produto": ultima.id, "quantidade": "1"}, format="json")
+        ped_bia = self.client.post(
+            "/api/pedidos/", {"modalidade": "RETIRADA", "forma_pagamento": "DINHEIRO"}, format="json"
+        ).data[0]["id"]
+
+        # Ao produtor aceitar o primeiro pedido, o estoque zera e o segundo é bloqueado
+        self.login("maria")
+        r1 = self.client.post(f"/api/produtor/pedidos/{ped_joao}/aceitar/")
+        self.assertEqual(r1.status_code, 200)
+        r2 = self.client.post(f"/api/produtor/pedidos/{ped_bia}/aceitar/")
+        self.assertEqual(r2.status_code, 400)
+
+        ultima.refresh_from_db()
+        self.assertEqual(ultima.estoque, Decimal("0"))
+
+
+class ConcorrenciaEstoqueTransactionTest(TransactionTestCase):
+    def test_concorrencia_simultanea_ultima_unidade_com_threads(self):
+        prod_user = Usuario.objects.create_user("prod_conc", "pc@ex.com", PW, tipo=Usuario.Tipo.PRODUTOR)
+        perfil = PerfilProdutor.objects.create(
+            usuario=prod_user, status=PerfilProdutor.Status.APROVADO, nome_propriedade="Sítio Concorrente"
+        )
+        c1 = Usuario.objects.create_user("cli_a", "ca@ex.com", PW, tipo=Usuario.Tipo.CLIENTE)
+        c2 = Usuario.objects.create_user("cli_b", "cb@ex.com", PW, tipo=Usuario.Tipo.CLIENTE)
+        cat = Categoria.objects.create(nome="Grãos")
+        produto = Produto.objects.create(produtor=perfil, categoria=cat, nome="Feijão", preco="12.00", estoque="1")
+
+        ped1 = Pedido.objects.create(
+            cliente=c1, produtor=perfil, modalidade=Pedido.Modalidade.RETIRADA,
+            forma_pagamento=Pedido.FormaPagamento.DINHEIRO, total=Decimal("12.00"),
+        )
+        ItemPedido.objects.create(
+            pedido=ped1, produto=produto, nome_produto="Feijão",
+            unidade_medida="KG", preco_unitario=Decimal("12.00"), quantidade=Decimal("1"),
+        )
+        ped2 = Pedido.objects.create(
+            cliente=c2, produtor=perfil, modalidade=Pedido.Modalidade.RETIRADA,
+            forma_pagamento=Pedido.FormaPagamento.DINHEIRO, total=Decimal("12.00"),
+        )
+        ItemPedido.objects.create(
+            pedido=ped2, produto=produto, nome_produto="Feijão",
+            unidade_medida="KG", preco_unitario=Decimal("12.00"), quantidade=Decimal("1"),
+        )
+
+        barrier = threading.Barrier(2)
+        results = []
+        lock = threading.Lock()
+
+        def worker(pedido):
+            close_old_connections()
+            barrier.wait()
+            try:
+                for attempt in range(10):
+                    try:
+                        services.mudar_status(pedido, Pedido.Status.ACEITO, prod_user)
+                        with lock:
+                            results.append("ok")
+                        break
+                    except OperationalError:
+                        # SQLite em memória (cache=shared) não aguarda busy_timeout em SQLITE_LOCKED
+                        if connection.vendor != "sqlite" or attempt == 9:
+                            raise
+                        time.sleep(0.05)
+                    except ValidationError:
+                        with lock:
+                            results.append("blocked")
+                        break
+            finally:
+                close_old_connections()
+
+        t1 = threading.Thread(target=worker, args=(ped1,))
+        t2 = threading.Thread(target=worker, args=(ped2,))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        self.assertEqual(sorted(results), ["blocked", "ok"])
+        produto.refresh_from_db()
+        self.assertEqual(produto.estoque, Decimal("0"))
